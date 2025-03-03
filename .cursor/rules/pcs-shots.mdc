@@ -1,0 +1,109 @@
+---
+description: 
+globs: 
+---
+## Polynomial Commitment Scheme interfaces
+
+There are three traits that define the interface to Polynomial Commitment Schemes with Low-Degree Extension in Plonky3, all defined in [pcs.rs](mdc:commit/src/pcs.rs):
+
+ - `Pcs<Val, In>` is the interface to creating commitments.
+
+   The `Val` is field to which the polynomial's coefficients are defined.
+   The `In` is a type that contains a batch of polynomials; typically, it is a matrix of `Val` where each column is the evaluations of a polynomial on a certain domain (of appropriate roots of unity like in FRI).
+   The trait's main method is `commit_batches`, it allows one to commit to vector of batches producing a single `Commitment` and `ProverData` (can be used by other traits that define opening and verification methods) values.
+   The single (commitment, prover data) pair binds a whole vector of batches,
+     using these one can operate with the whole vector of batches (when verifying, opening, compuding low-degree extensions later; but all these are defined by other traits like `UnivariatePcs` and `UnivariatePcsWithLde`).
+   (The `commit_batch` is just a shorthand for `commit_batches` where the vector contains only one batch.)
+
+   Using a vector of batches and making a distinction between different batches inside the vector
+     allows one to collect together batches from many independent tasks as long as they can be processed in parallel
+     (i.e. committed to, verified, computed LDEs of at the same time),
+     while still being able to tell apart the values accompanying each batch in all of these tasks.
+
+   Commitments are computed by the Prover.
+
+ - `UnivariatePcs<Val, EF, In, Challenger>` is the interface to opening and verifying commitments made with `Pcs<Val, In>`.
+
+   The `Val` and `In` have the same meaning as in `Psc`.
+   This interface defines methods:
+   - `open_multi_batches` for evaluating the polynomials in the given points and producing the proof of that being done correctly (by Prover),
+   - `verify_multi_batches` for verifying evaluations and the proof from `open_multi_batches` (by Verifier).
+
+   The `open_multi_batches` accepts a list of (commitment, points list) pairs.
+   Each such pair comes from a call to `commit_batches`,
+     and `open_multi_batches` will evaluate all the polynomials of all the batches bound by that commitment in the given list of points.
+   In other words, a call to `open_multi_batches` produces a single proof for multiple evaluations of multiple commitments.
+
+   The `verify_multi_batches` accepts the inputs and outputs of a `open_mutli_batches` and verifies that they match.
+
+   One important detail here is that points to evaluate the polynomials in belong to the field `EF` that is an extension of `Val`,
+     therefore the evaultion resuls also belong to `EF`.
+   The `Val` is where coefficients of the polynomials belong to.
+
+   The `Challenger` argument (defined in [lib.rs](mdc:challenger/src/lib.rs)) is the Fiat-Shamir transcript of interaction between Prover and Verifier.
+   Both `open_multi_batches` and `verify_multi_batches` take `Challenger` as an input
+     and append values to its transcript in the same way,
+     by calling the its observe methods (via `.observe(_)`, `.observe_slice(_)` or `.observe_ext_element(_)`) in exactly the same sequence.
+   Because of this, the Prover's call to `open_multi_batches` and Verifier's call to `verify_multi_batches` are dual
+     and the way Prover and Verifier call these methods must be in sync.
+
+- `UnivariatePcsWithLde<Val, EF, In, Challenger>` is the extension of `UnivariatePcs` that additionally allows computing LDEs of the committed polynomials.
+    
+   Its method `commit_shifted_batches` (and `commit_shifted_batch`) is analogous to `commit_batches` from `Psc`,
+     but expects the evaluations of the polynomials (of every batch of the input vector) to be over different domain (coset of a group of roots of unity).
+   
+   The `get_ldes` method computes the low-degree extension of the committed polynomials.
+   It accepts a `ProverData` value from `commit_shifted_batches` or `commit_batches`,
+     and it returns a vector of matrices where each matrix corresponds to one batch of polynomials (given to the commit function call).
+   The layout of the returned `result: Vec<RowMajorMatrixView<'b, Val>>` is the same as `polynomials: Vec<In>` matrix given to commit function all:
+     each column corresponds to evaluations of a vector over a given domain (and the number of columns of `result[i]` is the same as `polynomials[i]`);
+     the difference is that columns in `result` are much longer since the evaluations in `result` are done over a larger domain (LDE).
+
+## Processing multiple batches
+
+On first writing of code, use the commitment functions that work with one batch at at time (`commit_batch` and `commit_shifted_batch`).
+Later, when asked to make the code more efficient by processing multiple batches at a time,
+  find series of calls to `commit_batch` that happen sequentially,
+  and such that the corresponding uses of these commitments and their prover data (for computing LDEs and openings) are also done sequentially with no functional dependencies between such calls (of the same type);
+     then combine such calls a single `commit_batches`,
+     do the same with lde computations (if not already done),
+     and opening calls.
+Change the code appropritely (modify the layout of the Proof returned by the Prover) to account for a single commitment (or prover data) variable playing the role of multiple such variables before.
+
+Same for opening.
+On first writing, use separate opening/verification calls for each value to make the code simpler.
+When asked to optimize these calls,
+  combine them together and take into account the new layout of opened evaluations.
+
+## Synchronizing Prover and Verifier
+
+The `Challenger` interface we use here is the same is the same for both Prover and Verifier
+  (same trait with the same methods):
+  - "observe" methods (`observe`, `observe_slice` and `observe_ext_element`) that append new messages (from Prover to Verifier in the interactive setting) to the transcript,
+  - "sample" methods (`sample`, `sample_array`, `sample_vec` and `sample_ext_element`) that compute pseudorandom values by hashing the current transcript contents (correspond to random messages sent by Verifier to the Prover).
+
+The trace of calls that a Prover does to "observe" and "sample" methods of a prover must match the trace of such calls of the Verifier it runs with.
+
+The general pattern is that a Prover function returns a proof value (the type and layout of which depends on concrete statement this specific Prover is computing).
+And its corresponding verifier will accept this Proof value as input.
+Prover and Verifier both accept a mutable reference to a Challenger,
+  and whatever logic they perform must apply symmetric operations to the Challenger
+  (note that symmetry must only hold with respect to Challenger updates, the actions that don't touch the Challenger will often differ between the Prover and Verifier).
+The values Prover adds to Challenger transcript (with "observe" methods) must be reconstructible by the Verifier as well,
+  it's the job of proof produced by the Prover to make sure of that;
+  one straightforward way to ensure that is to directly include
+    such observed values in the proof.
+When Prover is calling a functon that modifies the Challenger transcript, Verifier must call its dual of that function. For example, `verify_multi_batches` is Verifier's dual of Prover's `open_multi_batches` (when called with corresponding values); any "observe" or "sample" function is dual to itself.
+
+A Prover and Verifier that are in sync and handle Challenger transcript correctly may be used by another Prover' and Verifier' if Prover' calls prover at a stage that corresponds to Verifier' calling Verifier. This way, Prover-Verifier pairs may be re-used as subroutines by other Provers and Verifiers if the calls are in sync.
+This way, Verifier is dual of its Prover,
+  and another Prover' calling Prover requires Verifier' calling Verifier.
+(The functions like `commit_batch` or `get_ldes`, for example, on the other hand, don't require Verifier to do anything special because the functions touch the Challenger.)
+
+Following the rules above,
+  the code of Prover and Verifier must be written side by side,
+  ensuring that their actions on Challenger in sequence are synchronized.
+It's best to first come up with this kind of unified flow of logic for both, and only then extract the corresponding Rust functions for Prover and Verifier.
+The high-level pseudocode logic is best to include in the comment to the Rust functions to it more accessible.
+When reading new code of Prover and Verifier,
+  come up with this kind of high-level correspondence (by syntactically observing the use of Challenger) between their actions and only then answer any queries.

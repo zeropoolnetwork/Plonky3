@@ -1,0 +1,266 @@
+---
+description: testgjgj
+globs: 
+---
+
+If some of the expected inputs were not present and were initialized for this commitment operation,
+  they should be kept for later use.
+
+
+## Global Parameters
+
+```rust
+config: &SC,
+    where SC: StarkGenericConfig
+// the following may be initialized in your response if not already present
+let pcs = config.pcs();
+```
+[config.rs](mdc:uni-stark/src/config.rs)
+
+
+## Example: Committing to Trace
+
+### Prompt
+
+Commit to the trace (aka witness) `trace: RowMajorMatrix<Val<SC>>`.
+
+[dense.rs](mdc:matrix/src/dense.rs)
+
+### Inputs
+
+These values are expected to be in context.
+
+```rust
+let trace = // ...
+let trace_domain = pcs.natural_domain_for_degree(degree);
+let degree = trace.height();
+let log_degree = log2_strict_usize(degree);
+let trace_domain = pcs.natural_domain_for_degree(degree);
+```
+
+### Response
+
+```rust
+let (trace_commit, trace_data) = pcs.commit(vec![(trace_domain, trace)]);
+```
+
+[pcs.rs](mdc:commit/src/pcs.rs)
+
+### Outputs
+
+The `trace_commit` and `trace_data` are the main results of this operation.
+
+
+## Example: Computing Quotient Domain
+
+### Prompt:
+
+Initialize the quotient domain for trace `trace: RowMajorMatrix<Val<SC>>`.
+
+### Inputs
+
+```rust
+let constraint_degree = // maximum degree of the constraints that define the quotient
+// The following may be initialized if not already present
+let log_quotient_degree = log2_ceil_usize(constraint_degree - 1);
+let degree = trace.height();
+let log_degree = log2_strict_usize(degree);
+```
+
+### Response
+
+```rust
+let quotient_domain =
+    trace_domain.create_disjoint_domain(1 << (log_degree + log_quotient_degree));
+```
+
+### Outputs
+
+`quotient_domain`
+
+
+## Example: Evaluating Trace on quotient domain
+
+### Prompt
+
+Evaluate the previously committed trace given by `trace_data: SC::Psc::ProverData` on domain `d :: SC.Pcs::Domain`.
+
+(Commonly used domain for this operation is the quotient domain.)
+
+### Inputs
+
+```rust
+let trace_data = // obtained by committing to the trace
+let ix = // index of the trace in the evaluations vector passed to `pcs.commit`; if the call was pcs.commit(vec![(trace_domain, trace)]), then ix = 0
+let d = // domain
+```
+
+### Response
+
+```rust
+let trace_on_d = pcs.get_evaluations_on_domain(&trace_data, ix, d);
+```
+
+### Outputs
+
+`trace_on_d`
+
+
+## Sample a challenge
+
+### Prompt
+
+Sample a challenge.
+
+### Inputs
+
+`challenger: &mut Challenger` must be given as input to Prover, never initialize inside Prover
+
+### Response
+
+```rust
+let alpha: SC::Challenge = challenger.sample_ext_element();
+```
+
+### Outputs
+
+`alpha`
+
+## Example: observe a value with transcript
+
+### Prompt
+
+Observe `x`.
+
+### Inputs
+
+`challenger: &mut Challenger` must be given as input to Prover, never initialize inside Prover
+
+[lib.rs](mdc:challenger/src/lib.rs)
+
+### Response
+
+One of the following:
+
+`challenger.observe(x)`, `challenger.observe_slice(x)`, or `challenger.observe_ext_element(x)`
+depending on the type of `x` and with appropriate borrowing/cloning
+
+### Outputs
+
+None.
+
+
+## Example: Break quotient values into chunks
+
+### Prompt
+
+Break down `quotient_values: Vec<SC::Challenger>` evaluated on `quotient_domain: SC::Pcs::Domain` into chunks.
+
+### Inputs
+
+```rust
+let quotient_domain = // ...;
+let quotient_values = // values of quotient polynomial on quotient_domain
+```
+
+### Response
+
+```rust
+let quotient_flat = RowMajorMatrix::new_col(quotient_values).flatten_to_base();
+let quotient_chunks = quotient_domain.split_evals(quotient_degree, quotient_flat);
+let qc_domains = quotient_domain.split_domains(quotient_degree);
+```
+
+[dense.rs](mdc:matrix/src/dense.rs) [domain.rs](mdc:commit/src/domain.rs)
+
+### Outputs
+
+`quotient_chunks`, `qc_domain`
+
+
+## Commit to quotient chunks
+
+### Prompt
+
+Commit to `quotient_chunks`
+
+### Inputs
+
+```rust
+let (qc_domains, quotient_chunks) = // results of breaking down the quotient evaluations into chunks
+```
+
+### Response
+
+```rust
+let (quotient_commit, quotient_data) = pcs.commit(izip!(qc_domains, quotient_chunks).collect_vec())
+```
+
+[pcs.rs](mdc:commit/src/pcs.rs)
+
+
+## Example: open the values that connect trace to the quotient
+
+### Prompt
+
+Open the values that connect trace to the quotient, where the committed trace is defined by `trace_data` and committed quotient chunks are defined by `quotient_data`.
+
+### Response
+
+```rust
+// sample the challenge
+let zeta: SC::Challenge = challenger.sample();
+let zeta_next = trace_domain.next_point(zeta).unwrap();
+
+// open the values
+let (opened_values, opening_proof) = pcs.open(
+    vec![
+        (&trace_data, vec![vec![zeta, zeta_next]]),
+        (
+            &quotient_data,
+            // open every chunk at zeta
+            (0..quotient_degree).map(|_| vec![zeta]).collect_vec(),
+        ),
+    ],
+    challenger,
+);
+
+// extract the values into variables with descriptive names
+let trace_local = opened_values[0][0][0].clone();
+let trace_next = opened_values[0][0][1].clone();
+let quotient_chunks = opened_values[1].iter().map(|v| v[0].clone()).collect_vec();
+let opened_values = OpenedValues {
+    trace_local,
+    trace_next,
+    quotient_chunks,
+};
+```
+
+[pcs.rs](mdc:commit/src/pcs.rs) [proof.rs](mdc:uni-stark/src/proof.rs)
+
+### Outputs
+
+`opened_values`
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

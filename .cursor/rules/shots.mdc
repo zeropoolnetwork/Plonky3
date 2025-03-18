@@ -2,21 +2,46 @@
 description: testgjgj
 globs: 
 ---
+You are assisting the user in writing ZK code using Plonky3 library.
+The user will ask you 
+Below are given "few shots" examples for the different kinds of prompts you could get,
+  and the ideal responses expected from you.
+When asked on actual prompts, use the examples to satisfy it to the best of your ability.
+Each example consists of four sections:
 
-If some of the expected inputs were not present and were initialized for this commitment operation,
-  they should be kept for later use.
+1. Prompt: what the user has asked, with optional clarifications given in brackets (not part of user's direct speech).
+2. Inputs: what varibles this prompt expects to find in context.
+   Some of such variables may be directly referenced in the user's prompt (e.g. "do something with `t`" means `t` is such input),
+     while others may be implicit and you must find them by looking at their relationship to the things referred to by the prompt.
+   Some of such variables must be initialized if they are not yet present in context,
+     in that case "Inputs" section will explain how to initialize them
+     (if you initialize them in your generated code, keep them around for use in future).
+3. Response: the output ideally expected from you.
+   It will always contain some snippet of Rust code that you must insert into user's program.
+   There may be more than one snippet given with some instructions on how to choose one of them or assemble them into what you insert into user's program.
+   Feel free to complement your reponse with comments or explanations of your reasoning when you respond to the user.
+4. Outputs: the values inroduced into context by "Response" Rust code that were the goal of running that code.
+   Make sure you produce them and keep them in the context,
+     but also take note of them for future queries since they are very likely to serve as "Inputs" to the future prompts.
+   In the descriptions below, the Outputs may be supplied with comments explaining their purpose;
+     use that info to detect when these Output will need to serve as Inputs to the other code generation requests.
 
-
-## Global Parameters
+The following are the values that should be available for all of the examples below.
+I.e. you can treat them as global inputs for all of the examples.
+In practice, these are usually passed as arguments to the Prover function or initialized at the very top of Prover to make them available to all of the Prover logic.
 
 ```rust
 config: &SC,
     where SC: StarkGenericConfig
+// must be given as an argument to the Prover function, never initialize challenger inside theProver
+challenger: &mut Challenger
 // the following may be initialized in your response if not already present
 let pcs = config.pcs();
 ```
-[config.rs](mdc:uni-stark/src/config.rs)
 
+[config.rs](mdc:uni-stark/src/config.rs)
+[lib.rs](mdc:challenger/src/lib.rs)
+[pcs.rs](mdc:commit/src/pcs.rs)
 
 ## Example: Committing to Trace
 
@@ -60,7 +85,7 @@ Initialize the quotient domain for trace `trace: RowMajorMatrix<Val<SC>>`.
 ### Inputs
 
 ```rust
-let constraint_degree = // maximum degree of the constraints that define the quotient
+let constraint_degree = // maximum degree of the constraints that define the quotient, this highly depends on the statement the user is proving and the user must supply you with enough info to determine it
 // The following may be initialized if not already present
 let log_quotient_degree = log2_ceil_usize(constraint_degree - 1);
 let degree = trace.height();
@@ -92,7 +117,7 @@ Evaluate the previously committed trace given by `trace_data: SC::Psc::ProverDat
 ```rust
 let trace_data = // obtained by committing to the trace
 let ix = // index of the trace in the evaluations vector passed to `pcs.commit`; if the call was pcs.commit(vec![(trace_domain, trace)]), then ix = 0
-let d = // domain
+let d = // domain; very often we will use d = quotient_domain from the previous example
 ```
 
 ### Response
@@ -110,11 +135,11 @@ let trace_on_d = pcs.get_evaluations_on_domain(&trace_data, ix, d);
 
 ### Prompt
 
-Sample a challenge.
+Sample a challenge `alpha`.
 
 ### Inputs
 
-`challenger: &mut Challenger` must be given as input to Prover, never initialize inside Prover
+None.
 
 ### Response
 
@@ -134,9 +159,7 @@ Observe `x`.
 
 ### Inputs
 
-`challenger: &mut Challenger` must be given as input to Prover, never initialize inside Prover
-
-[lib.rs](mdc:challenger/src/lib.rs)
+`x`
 
 ### Response
 
@@ -205,6 +228,10 @@ let (quotient_commit, quotient_data) = pcs.commit(izip!(qc_domains, quotient_chu
 
 Open the values that connect trace to the quotient, where the committed trace is defined by `trace_data` and committed quotient chunks are defined by `quotient_data`.
 
+### Inputs
+
+`trace_data`, `quotient_data`
+
 ### Response
 
 ```rust
@@ -240,7 +267,7 @@ let opened_values = OpenedValues {
 
 ### Outputs
 
-`opened_values`
+`opened_values`, `opening_proof`
 
 
 

@@ -60,7 +60,6 @@ let trace = // ...
 let trace_domain = pcs.natural_domain_for_degree(degree);
 let degree = trace.height();
 let log_degree = log2_strict_usize(degree);
-let trace_domain = pcs.natural_domain_for_degree(degree);
 ```
 
 ### Response
@@ -108,7 +107,7 @@ let quotient_domain =
 
 ### Prompt
 
-Evaluate the previously committed trace given by `trace_data: SC::Psc::ProverData` on domain `d :: SC.Pcs::Domain`.
+Evaluate the previously committed trace given by `trace_data: SC::Pcs::ProverData` on domain `d :: SC.Pcs::Domain`.
 
 (Commonly used domain for this operation is the quotient domain.)
 
@@ -168,6 +167,10 @@ One of the following:
 `challenger.observe(x)`, `challenger.observe_slice(x)`, or `challenger.observe_ext_element(x)`
 depending on the type of `x` and with appropriate borrowing/cloning
 
+If the value to be observed is a Rust builtin integer type like `usize`,
+  convert it to `Val<SC>` appropriately.
+For example, `i: usize` can be observed with `challenger.observe(Val::<SC>::from_canonical_usize(i))`.
+
 ### Outputs
 
 None.
@@ -177,12 +180,16 @@ None.
 
 ### Prompt
 
-Break down `quotient_values: Vec<SC::Challenger>` evaluated on `quotient_domain: SC::Pcs::Domain` into chunks.
+Break down `quotient_values: Vec<SC::Challenge>` evaluated on `quotient_domain: SC::Pcs::Domain` into chunks.
 
 ### Inputs
 
 ```rust
-let quotient_domain = // ...;
+let constraint_degree = // ...
+let log_quotient_degree = log2_ceil_usize(constraint_degree - 1);
+let quotient_degree = 1 << log_quotient_degree;
+
+let quotient_domain = // ...
 let quotient_values = // values of quotient polynomial on quotient_domain
 ```
 
@@ -198,7 +205,7 @@ let qc_domains = quotient_domain.split_domains(quotient_degree);
 
 ### Outputs
 
-`quotient_chunks`, `qc_domain`
+`quotient_chunks`, `qc_domains`
 
 
 ## Commit to quotient chunks
@@ -265,29 +272,136 @@ let opened_values = OpenedValues {
 
 [pcs.rs](mdc:commit/src/pcs.rs) [proof.rs](mdc:uni-stark/src/proof.rs)
 
+The above opens only `zeta` and `zeta_next` points of trace
+  because we assume that a constraint may look at at most one row ahead of the current one.
+I.e. a constraint polynomial may only depend on `t_w(X)` and `t_w(g * X)`,
+  where `t_w(X)` is the polynomial encoded by the `w`-th column of the trace
+  and `g` is the generator of the trace domain.
+If one needs constraints that also look further, say, at `t_w(g^2 * X)`,
+  one would also need to open `trace_domain.next(zeta_next).unwrap()`.
+
 ### Outputs
 
 `opened_values`, `opening_proof`
 
 
+## Example: compute Lagrange selectors
+
+### Prompt
+
+Calculate Lagrange selectors for `trace_domain: Domain<SC>` on `quotient_domain: Domain<SC>`.
+
+### Inputs
+
+```rust
+let trace_domain = pcs.natural_domain_for_degree(degree);
+let quotient_domain =
+    trace_domain.create_disjoint_domain(1 << (log_degree + log_quotient_degree));
+// where:
+let degree = trace.height();
+let log_degree = log2_strict_usize(degree);
+let log_quotient_degree = log2_ceil_usize(constraint_degree - 1);
+// for our `trace` and `constraint_degree`
+```
+
+### Response
+
+```rust
+let sels = trace_domain.selectors_on_coset(quotient_domain);
+```
+
+Alternatively, if we intend to work with packed slices of these selectors,
+  they may need to be padded with dummy values to the packing width
+  (the dummy values will be discarded later, we only need them to avoid having to check extra conditions in the calculations on packed `sels` slices):
+
+```rust
+let mut sels = trace_domain.selectors_on_coset(quotient_domain);
+// We take PackedVal::<SC>::WIDTH worth of values at a time from a quotient_size slice, so we need to
+// pad with default values in the case where quotient_size is smaller than PackedVal::<SC>::WIDTH.
+for _ in quotient_size..PackedVal::<SC>::WIDTH {
+    sels.is_first_row.push(Val::<SC>::default());
+    sels.is_last_row.push(Val::<SC>::default());
+    sels.is_transition.push(Val::<SC>::default());
+    sels.inv_zeroifier.push(Val::<SC>::default());
+}
+let sels = sels;
+```
+
+[domain.rs](mdc:commit/src/domain.rs)
+
+### Outputs
+
+`sels`.
+Here `sels.is_first_row`, `sels.is_last_row` and `sels.is_transition` are used when calculating the constraint polynomial,
+  and `sels.inv_zeroifier` is multiplied by constraint polynomial to obtain quotient.
 
 
+## Example: efficient parallel and SIMD-enabled quotient evaluation
 
+### Prompt
 
+Implement a loop for quotient evalution
+  (that uses multiple parallel threads, and and packs the values for SIMD processing).
+Leave the placeholder in the place where actual constraint expression should be,
+  but prepare all the (packed) values necessary for constraint expression
+  (such as selectors, two main matrix rows, alpha powers, public values).
 
+### Inputs
 
+```rust
+let trace_domain: Domain<SC> = //trace domain
+let quotient_domain: Domain<SC> = //quotient domain
 
+let quotient_size = quotient_domain.size();
+let width = trace_on_quotient_domain.width(); // same as trace.width, also known as number of registers in the trace
 
+let sels = // Lagrange selectors precomputed as shown above with padding to PackedVal::<SC>::WIDTH
+let trace_on_quotient_domain = // trace compute on quotient domain as shown above
 
+let qdb = log2_strict_usize(quotient_domain.size()) - log2_strict_usize(trace_domain.size());
+// next_step is the degree multiplicity of `trace_domain` generator with respect to `quotient_domain` generator,
+// i.e. `g_trace = g_quotient^(next_step).
+// we use it below to calculate what "next row" of trace in trace domain means on quotient domain.
+let next_step = 1 << qdb;
 
+let alpha: SC::Challenge = // challenge sampled from transcript
+let constraint_count = // number of constraints
+// powers of alpha
+let mut alpha_powers = alpha.powers().take(constraint_count).collect_vec();
+alpha_powers.reverse();
+```
 
+### Response
 
+```rust
+let result: Vec<SC::Challenge> = (0..quotient_size)
+    .into_par_iter()
+    .step_by(PackedVal::<SC>::WIDTH)
+    .flat_map_iter(|i_start| {
+        let i_range = i_start..i_start + PackedVal::<SC>::WIDTH;
 
+        let is_first_row = *PackedVal::<SC>::from_slice(&sels.is_first_row[i_range.clone()]);
+        let is_last_row = *PackedVal::<SC>::from_slice(&sels.is_last_row[i_range.clone()]);
+        let is_transition = *PackedVal::<SC>::from_slice(&sels.is_transition[i_range.clone()]);
+        let inv_zeroifier = *PackedVal::<SC>::from_slice(&sels.inv_zeroifier[i_range.clone()]);
 
+        let main = RowMajorMatrix::new(
+            trace_on_quotient_domain.vertically_packed_row_pair(i_start, next_step),
+            width,
+        );
 
+				// PLACEHOLDER: compute the constraints value here
+        let constraints: PackedChallenge<SC> = _;
 
+        // quotient(x) = constraints(x) / Z_H(x)
+        let quotient = constraints * inv_zeroifier;
 
-
-
-
-
+        // "Transpose" D packed base coefficients into WIDTH scalar extension coefficients.
+        (0..core::cmp::min(quotient_size, PackedVal::<SC>::WIDTH)).map(move |idx_in_packing| {
+            SC::Challenge::from_base_fn(|coeff_idx| {
+                quotient.as_base_slice()[coeff_idx].as_slice()[idx_in_packing]
+            })
+        })
+    })
+    .collect();
+```

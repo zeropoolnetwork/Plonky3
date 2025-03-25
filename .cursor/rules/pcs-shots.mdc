@@ -21,12 +21,12 @@ The values Prover adds to Challenger transcript (with "observe" methods) must be
   it's the job of proof produced by the Prover to make sure of that;
   one straightforward way to ensure that is to directly include
     such observed values in the proof.
-When Prover is calling a functon that modifies the Challenger transcript, Verifier must call its dual of that function. For example, `verify_multi_batches` is Verifier's dual of Prover's `open_multi_batches` (when called with corresponding values); any "observe" or "sample" function is dual to itself.
+When Prover is calling a functon that modifies the Challenger transcript, Verifier must call its dual of that function. For example, `verify` is Verifier's dual of Prover's `open` (when called with corresponding values); any "observe" or "sample" function is dual to itself.
 
 A Prover and Verifier that are in sync and handle Challenger transcript correctly may be used by another Prover' and Verifier' if Prover' calls prover at a stage that corresponds to Verifier' calling Verifier. This way, Prover-Verifier pairs may be re-used as subroutines by other Provers and Verifiers if the calls are in sync.
 This way, Verifier is dual of its Prover,
   and another Prover' calling Prover requires Verifier' calling Verifier.
-(The functions like `commit_batch` or `get_ldes`, for example, on the other hand, don't require Verifier to do anything special because the functions touch the Challenger.)
+(The functions like `commit` or `get_evaluations_on_domain`, for example, on the other hand, don't require Verifier to do anything special because the functions touch the Challenger.)
 
 Following the rules above,
   the code of Prover and Verifier must be written side by side,

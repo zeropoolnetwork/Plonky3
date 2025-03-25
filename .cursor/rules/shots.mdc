@@ -1,9 +1,11 @@
 ---
 description: testgjgj
 globs: 
+alwaysApply: false
 ---
+
 You are assisting the user in writing ZK code using Plonky3 library.
-The user will ask you 
+The user will ask you to write code snippet by snippet with each prompt.
 Below are given "few shots" examples for the different kinds of prompts you could get,
   and the ideal responses expected from you.
 When asked on actual prompts, use the examples to satisfy it to the best of your ability.
@@ -154,7 +156,7 @@ let alpha: SC::Challenge = challenger.sample_ext_element();
 
 ### Prompt
 
-Observe `x`.
+Observe (or "include in transcript") `x`.
 
 ### Inputs
 
@@ -165,11 +167,25 @@ Observe `x`.
 One of the following:
 
 `challenger.observe(x)`, `challenger.observe_slice(x)`, or `challenger.observe_ext_element(x)`
-depending on the type of `x` and with appropriate borrowing/cloning
+depending on the type of `x` and with appropriate borrowing/cloning.
 
 If the value to be observed is a Rust builtin integer type like `usize`,
   convert it to `Val<SC>` appropriately.
 For example, `i: usize` can be observed with `challenger.observe(Val::<SC>::from_canonical_usize(i))`.
+
+Comment: at the beginnging of a protocol (before sampling any pseudorandom values from the transcript),
+  one will typically observe `trace_commit` value
+  together some other public data that indentifes the instance;
+  so that all the future randomness obtained from challenger depends on this data.
+For example, `public_values: &Vec<Val<SC>>` (public inputs of the constraint system, aka instance)
+  and `log_degree = log2_strict_usize(trace.height())` should, when possible,
+  be included in the transcript together with the `trace_commit`:
+
+```rust
+challenger.observe(trace_commit.clone());
+challenger.observe(Val::<SC>::from_canonical_usize(log_degree));
+challenger.observe_slice(public_values);
+```
 
 ### Outputs
 
@@ -185,11 +201,7 @@ Break down `quotient_values: Vec<SC::Challenge>` evaluated on `quotient_domain: 
 ### Inputs
 
 ```rust
-let constraint_degree = // ...
-let log_quotient_degree = log2_ceil_usize(constraint_degree - 1);
-let quotient_degree = 1 << log_quotient_degree;
-
-let quotient_domain = // ...
+let quotient_domain = // ...;
 let quotient_values = // values of quotient polynomial on quotient_domain
 ```
 
@@ -349,11 +361,10 @@ Leave the placeholder in the place where actual constraint expression should be,
 ### Inputs
 
 ```rust
+let public_values: &Vec<Val<SC>> = // public inputs of the constraint system (aka instance), given as an argument to prover and verifier
+
 let trace_domain: Domain<SC> = //trace domain
 let quotient_domain: Domain<SC> = //quotient domain
-
-let quotient_size = quotient_domain.size();
-let width = trace_on_quotient_domain.width(); // same as trace.width, also known as number of registers in the trace
 
 let sels = // Lagrange selectors precomputed as shown above with padding to PackedVal::<SC>::WIDTH
 let trace_on_quotient_domain = // trace compute on quotient domain as shown above
@@ -369,6 +380,7 @@ let constraint_count = // number of constraints
 // powers of alpha
 let mut alpha_powers = alpha.powers().take(constraint_count).collect_vec();
 alpha_powers.reverse();
+let alpha_powers = alpha_powers;
 ```
 
 ### Response
@@ -390,7 +402,9 @@ let result: Vec<SC::Challenge> = (0..quotient_size)
             width,
         );
 
-				// PLACEHOLDER: compute the constraints value here
+        // PLACEHOLDER: compute the constraints value here using
+        //   `main`, the `is_first_row`, `is_last_row`, `is_transition`, `inv_zeroifier` selectors,
+        //   as well as `alpha_powers` and `public_values`.
         let constraints: PackedChallenge<SC> = _;
 
         // quotient(x) = constraints(x) / Z_H(x)
@@ -405,3 +419,73 @@ let result: Vec<SC::Challenge> = (0..quotient_size)
     })
     .collect();
 ```
+
+## Example: AIR constraint evaluation with constraint folder
+
+The prompt should be invoked from inside a parallel loop traversing and packing the points of quotient domain for SIMD processing.
+All inputs and outputs of this prompt are per-iteration, i.e. correspond to packed evaluations of polynomials on `PackedVal::<SC>::WIDTH` points on the quotient domain.
+The response of this prompt should go in place of PLACEHOLDER from the previous example,
+  and most of the inputs described here are shown how to precompute in the previous example.
+
+### Prompt
+
+Evaluate AIR constraints described by `air` on trace values given by (two column) matrix `main`,
+  using `public_values` instance.
+You can use precomputed selectors `inv_zeroifier`, `is_transition`, `is_last_row`, `is_first_row`, as well as `alpha_powers`.
+
+### Inputs
+
+```rust
+let public_values: &Vec<Val<SC>> = // argument of prover and verifier, public instance
+
+let air: &A = // argument of prover and verifier, describes constraint system
+  where A: for<'a> Air<ProverConstraintFolder<'a, SC>>
+let symbolic_constraints = get_symbolic_constraints::<Val<SC>, A>(air, 0, public_values.len());
+let constraint_count = symbolic_constraints.len();
+
+let alpha_powers: = // `constraint_count` number of powers of challenge `alpha: SC::Challenge`
+
+// the following are packed and computed per iteration of the parallel traversal of quotient domain
+
+let main: DenseMatrix<Val<SC>::Packing> = // ...
+let (inv_zeroifier, is_transition, is_last_row, is_first_row) = // computed by taking out a slice of points from selectors `sels` and packing them
+```
+
+### Response
+
+```rust
+// initialize the constraint folder
+let accumulator = PackedChallenge::<SC>::ZERO;
+let mut folder = ProverConstraintFolder {
+    main: main.as_view(),
+    public_values,
+    is_first_row,
+    is_last_row,
+    is_transition,
+    alpha_powers: &alpha_powers,
+    accumulator,
+    constraint_index: 0,
+};
+
+// compute all constraints one by one
+air.eval(&mut folder);
+
+// extract the result of all constraints
+let constraint: PackedChallenge<SC> = folder.accumulator;
+```
+
+#### Comment
+
+We may want to fold more than one different set of constraints with one folder.
+In that case, the `folder` needs to be initialized only once and the constraints
+  from both sets are computed in sequence.
+For example, if we want to evaluate two sets of constraints given by two AIR values, we would do `let my folder = _; air1.eval(&mut folder); air2.eval(&mut folder); let constraint = folder.accumulator;`.
+In that case, the `constraint_count` is the sum of constraint counts of all the applied sets.
+
+Running `air.eval(&mut folder);` is not the only way to compute constraints,
+  one may choose to call the methods of `folder` directly or, in principle,
+  avoid using `folder` altogether and directly compute `constraint` value from the inputs of this prompt (but user needs to request this explicitly).
+
+### Outputs
+
+`folder` and `constraint`

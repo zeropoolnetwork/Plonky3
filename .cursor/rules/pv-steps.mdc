@@ -41,6 +41,12 @@ challenger: &mut Challenger
 let pcs = config.pcs();
 ```
 
+One type synonym we will use here is
+
+```rust
+type Pcs<SC> = SC::Pcs as Pcs<SC::Challenge, SC::Challenger>
+```
+
 [config.rs](mdc:uni-stark/src/config.rs)
 [lib.rs](mdc:challenger/src/lib.rs)
 [pcs.rs](mdc:commit/src/pcs.rs)
@@ -68,13 +74,14 @@ let log_degree = log2_strict_usize(degree);
 
 ```rust
 let (trace_commit, trace_data) = pcs.commit(vec![(trace_domain, trace)]);
+let trace_ix = 0; // this is the index of (trace_domain, trace) inside the vector passed to pcs.commit
 ```
 
 [pcs.rs](mdc:commit/src/pcs.rs)
 
 ### Outputs
 
-The `trace_commit` and `trace_data` are the main results of this operation.
+The `trace_commit`, `trace_data`, `trace_ix` are the main results of this operation.
 
 
 ## Example: Computing Quotient Domain
@@ -109,7 +116,7 @@ let quotient_domain =
 
 ### Prompt
 
-Evaluate the previously committed trace given by `trace_data: SC::Pcs::ProverData` on domain `d :: SC.Pcs::Domain`.
+Evaluate the previously committed trace given by `trace_data: Pcs<SC>::ProverData` on domain `d :: Pcs<SC>::Domain`.
 
 (Commonly used domain for this operation is the quotient domain.)
 
@@ -117,7 +124,7 @@ Evaluate the previously committed trace given by `trace_data: SC::Pcs::ProverDat
 
 ```rust
 let trace_data = // obtained by committing to the trace
-let ix = // index of the trace in the evaluations vector passed to `pcs.commit`; if the call was pcs.commit(vec![(trace_domain, trace)]), then ix = 0
+let trace_ix = // index of the trace in the evaluations vector passed to `pcs.commit` when obtaining `trace_data`
 let d = // domain; very often we will use d = quotient_domain from the previous example
 ```
 
@@ -196,7 +203,7 @@ None.
 
 ### Prompt
 
-Break down `quotient_values: Vec<SC::Challenge>` evaluated on `quotient_domain: SC::Pcs::Domain` into chunks.
+Break down `quotient_values: Vec<SC::Challenge>` evaluated on `quotient_domain: Pcs<SC>::Domain` into chunks.
 
 ### Inputs
 
@@ -235,6 +242,8 @@ let (quotient_chunks_domains, quotient_chunks) = // results of breaking down the
 ### Response
 
 ```rust
+use itertools::{izip};
+
 let (quotient_chunks_commit, quotient_chunks_data) = pcs.commit(izip!(quotient_chunks_domains, quotient_chunks).collect_vec())
 ```
 
@@ -332,13 +341,13 @@ Verify that `opening_proof` correcly certifies that `opened_values`
 ```rust
 // Commitments to the trace and quotient chunks, computed by the Prover and
 // provided to Verifier through the proof
-let trace_commit: Pcs::Commitment = //
-let quotient_chunks_commit: Psc::Commitment = //
+let trace_commit: Pcs<SC>::Commitment = //
+let quotient_chunks_commit: Pcs<SC>::Commitment = //
 
 // The evaluation domains for trace and quotient, computed (deterministically)
 // by both Prover and Verifier
-let trace_domain: Pcs::Domain = //
-let quotient_chunks_domains: Psc::Domain = //
+let trace_domain: Pcs<SC>::Domain = //
+let quotient_chunks_domains: Pcs<SC>::Domain = //
 
 // The challenge sampled from transcript (same for Prover and Verifier) and its
 // next value (with respect to trace domain generator)
@@ -352,7 +361,7 @@ let quotient_chunks_values: Vec<Vec<Challenge>> = //
 
 // Opening proof for the values above, produced by the Prover and provided to
 // verifier as part of the Proof
-let opening_proof: Pcs::OpeningProof = //
+let opening_proof: Pcs<SC>::Proof = //
 ```
 
 ### Response
@@ -567,7 +576,7 @@ You can use precomputed selectors `inv_zeroifier`, `is_transition`, `is_last_row
 let public_values: &Vec<Val<SC>> = // argument of prover and verifier, public instance
 
 let air: &A = // argument of prover and verifier, describes constraint system
-  where A: for<'a> Air<ProverConstraintFolder<'a, SC>>
+  where Air<SymbolicAirBuilder<Val<SC>>> + for<'a> Air<ProverConstraintFolder<'a, SC>>
 let symbolic_constraints = get_symbolic_constraints::<Val<SC>, A>(air, 0, public_values.len());
 let constraint_count = symbolic_constraints.len();
 
@@ -636,7 +645,7 @@ Reconstruct the value of quotient polynomial in point `zeta`
 ```rust
 let zeta: Challenge = // sampled from challenger symmetrically to Prover
 
-let quotient_chunks_domains: Vec<Pcs::Domain> = // must be computed in the same way as the domains used to split quotient polynomial into chunks
+let quotient_chunks_domains: Vec<Pcs<SC>::Domain> = // must be computed in the same way as the domains used to split quotient polynomial into chunks
 
 let quotient_chunks_values: Vec<Vec<Challenge>> = // extracted from proof Verifier gets from Prover
 ```
@@ -677,6 +686,36 @@ let quotient = opened_values
 
 `quotient: Challenge`
 
+
+## Example: Compute the Maximum Degree and the number of Air constraints
+
+### Prompt
+
+Compute the maximum degree and the number of AIR constraints.
+
+### Inputs
+
+```rust
+let air: Air<SymbolicAirBuilder<Val<SC>>> = // Given as argument to the Prover and Verifier
+let public_values = // Given as an argument to the Prover and Verifier
+let public_values_len = public_values.len();
+```
+
+### Response
+
+```rust
+let symbolic_constraints = get_symbolic_constraints::<Val<SC>, A>(air, 0, public_values_len);
+let constraint_count = symbolic_constraints.len();
+let constraint_degree = symbolic_constraints
+  .iter()
+  .map(SymbolicExpression::degree_multiple)
+  .max()
+  .unwrap_or(0);
+```
+
+### Outputs
+
+`constraint_count: usize` and `constraint_degree: usize`
 
 ## Example: (Verifier) Evaluate folded constraints at challenge point
 
@@ -752,7 +791,7 @@ Check that the `quotient`, opened value of quotient polynomial at `zeta`, is cor
 ```rust
 let folded_constraints: Challenge = // computed using the opened values from Prover
 
-let trace_domain: Pcs::Domain = // computed in the same way as on Prover
+let trace_domain: Pcs<SC>::Domain = // computed in the same way as on Prover
 let sels: LagrangeSelectors<Challenge> = trace_domain.selectors_at_point(zeta);
 
 let quotient: Challenge = // computed by restoring quotient from chunks we got from Prover

@@ -3,13 +3,15 @@ description:
 globs: 
 alwaysApply: false
 ---
+
 Following the structure of [pcs-shots.mdc](mdc:.cursor/rules/pcs-shots.mdc),
-  the Prover and Verifier for AIR constraints consist of the following steps.
+  we describe the steps of Prover and Verifier for AIR constraints consis in this document.
 We present each step marked with P or V depending on whether Prover or Verifier performs the step.
 In terms of interaction with the challenger,
   steps with the same numbers correpond to the dual steps between Prover and Verifier
   (e.g. if a step 3P correponds to `pcs.open`, then 3V will correspond to `pcs.verify`),
   steps without a P or V correpond to both Prover and Verifier doing the same thing.
+
 
 1: Compute `trace_domain` and `quotient_domain`.
 
@@ -38,6 +40,3 @@ In terms of interaction with the challenger,
 12V. Compute the value of folded constraints polynomial at `zeta` using the opened values.
 
 13V. Ensure that quotient value computed from folded constraints matches the one reconstructed from chunks.
-
-
-

@@ -1,0 +1,166 @@
+---
+description: 
+globs: 
+alwaysApply: false
+---
+
+## Prover and Verifier Function Types
+
+### Prover
+
+The following is the skeleton for prover function type;
+  it returns a proof structure that depends on its implementation.
+
+```rust
+pub struct Proof<SC: StarkGenericConfig> {
+  // contents depend on the prover implementation,
+}
+
+pub fn prove<SC, A>(
+    config: &SC,
+    predicate_description: &A /* depends on the statement that is proven */,
+    challenger: &mut SC::Challenger,
+    trace: RowMajorMatrix<Val<SC>>,
+    public_values: &Vec<Val<SC>>,
+) -> Proof<SC>
+where
+    SC: StarkGenericConfig,
+{
+}
+```
+
+The type of `predicate_description` parameter depends on the statement (aka circuit) this prover is proving.
+For example, for AIR constraints prover,
+  the type of `predicate_description` will be quantified as
+
+```rust
+where
+  A: Air<SymbolicAirBuilder<Val<SC>>> + for<'a> Air<ProverConstraintFolder<'a, SC>>
+```
+
+the AIR constraints description.
+The `SymbolicAirBuilder` is needed to calculate the constraints count and degree
+  (if these are known beforehand, `SymbolicAirBuilder` can be omitted);
+  while `ProverConstraintFolder` implements actual constraint polynomial evaluation.
+
+### Verifier
+
+```rust
+pub struct VerificationError<Er> {
+  // will depend on the Verifier implementation
+}
+
+pub fn verify<SC, A>(
+    config: &SC,
+    predicate_description: /* depends on the statement that is proven */,
+    challenger: &mut SC::Challenger,
+    proof: &Proof<SC>,
+    public_values: &Vec<Val<SC>>,
+) -> Result<(), VerificationError<PcsError<SC>>>
+where
+    SC: StarkGenericConfig,
+{
+}
+```
+
+Note that the Proof taken as an argument by Verifier is the Proof returned by the Prover.
+
+Similarly to Prover above,
+  the type of `predicate_description` will depend on the circuit that this Verifier is verifying
+    (proven by its corresponding Prover).
+For AIR constraints verifier,
+  it will be
+
+```rust
+where
+  A: Air<SymbolicAirBuilder<Val<SC>>> + for<'a> Air<VerifierConstraintFolder<'a, SC>>,
+```
+
+The `SymbolicAirBuilder` is needed as in Prover, to compute the constraint count and degree.
+The `VerifierConstraintFolder` is needed to comute the value of the folded constraint polynomial at the challenge point.
+
+### Imports
+
+The examples above use the following imports.
+All the crates with names prefixed with `p3_` are from Plonky3,
+  feel free to check source code in this repo.
+When preparing Prover and Verifier function signatures,
+  be sure to add these imports so the implementation can refer to them later.
+
+```rust
+use p3_air::{Air, BaseAir};
+use p3_challenger::{CanObserve, CanSample, FieldChallenger};
+use p3_commit::{Pcs, PolynomialSpace};
+use p3_field::{Field, FieldAlgebra, FieldExtensionAlgebra, PackedValue};
+use p3_matrix::dense::{RowMajorMatrixView, RowMajorMatrix};
+use p3_matrix::Matrix;
+use p3_matrix::stack::VerticalPair;
+use p3_maybe_rayon::prelude::*;
+use p3_uni_stark::{
+  Commitments,
+  Domain,
+  get_symbolic_constraints,
+  PackedChallenge,
+  PackedVal,
+  PcsError,
+  ProverConstraintFolder,
+  StarkGenericConfig,
+  SymbolicAirBuilder,
+  SymbolicExpression,
+  Val,
+  VerifierConstraintFolder,
+};
+use p3_uni_stark::symbolic_builder::{get_log_quotient_degree};
+use p3_util::{log2_ceil_usize, log2_strict_usize};
+#[macro_use]
+use alloc::vec::Vec;
+use itertools::Itertools;
+```
+
+## Synchronizing Prover and Verifier
+
+The `Challenger` interface we use here is the same is the same for both Prover and Verifier
+  (same trait with the same methods):
+  - "observe" methods (`observe`, `observe_slice` and `observe_ext_element`) that append new messages (from Prover to Verifier in the interactive setting) to the transcript,
+  - "sample" methods (`sample`, `sample_array`, `sample_vec` and `sample_ext_element`) that compute pseudorandom values by hashing the current transcript contents (correspond to random messages sent by Verifier to the Prover).
+
+The trace of calls that a Prover does to "observe" and "sample" methods of a prover must match the trace of such calls of the Verifier it runs with.
+
+The general pattern is that a Prover function returns a proof value (the type and layout of which depends on concrete statement this specific Prover is computing).
+And its corresponding verifier will accept this Proof value as input.
+Prover and Verifier both accept a mutable reference to a Challenger,
+  and whatever logic they perform must apply symmetric operations to the Challenger
+  (note that symmetry must only hold with respect to Challenger updates, the actions that don't touch the Challenger will often differ between the Prover and Verifier).
+The values Prover adds to Challenger transcript (with "observe" methods) must be reconstructible by the Verifier as well,
+  it's the job of proof produced by the Prover to make sure of that;
+  one straightforward way to ensure that is to directly include
+    such observed values in the proof.
+When Prover is calling a functon that modifies the Challenger transcript, Verifier must call its dual of that function.
+For example, `pcs.verify` is Verifier's dual of Prover's `pcs.open`
+  (assuming the verifier is passing to `pcs.verify` the opening proof and values 
+    that Prover got from the `pcs.open` call);
+  any "observe" or "sample" function is dual to itself.
+
+As a rule, all values Prover opens through `pcs.open` must be included
+  in the proof (together with the opening proofs) to ensure that
+  Verifier can make the corresponding `pcs.verify` call.
+
+A Prover and Verifier that are in sync and handle Challenger transcript correctly 
+  may be used by another Prover' and Verifier' if Prover' calls Prover at a stage that corresponds to Verifier' calling Verifier.
+This way, Prover-Verifier pairs may be re-used
+  as subroutines by other Provers and Verifiers if the calls are in sync.
+This way, Verifier is dual of its Prover,
+  and another Prover' calling Prover requires Verifier' calling Verifier.
+(The functions like `pcs.commit` or `pcs.get_evaluations_on_domain`, for example,
+  on the other hand,
+  don't require Verifier to do anything special
+    because the functions touch the Challenger.
+)
+
+Following the rules above,
+  the code of Prover and Verifier must be written side by side,
+  ensuring that their actions on Challenger in sequence are synchronized.
+It's best to first come up with this kind of unified flow of logic for both, and only then extract the corresponding Rust functions for Prover and Verifier.
+The high-level pseudocode logic is best to include in the comment to the Rust functions to it more accessible.
+When reading new code of Prover and Verifier,
+  come up with this kind of high-level correspondence (by syntactically observing the use of Challenger) between their actions and only then answer any queries.

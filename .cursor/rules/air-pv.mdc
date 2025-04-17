@@ -1,0 +1,42 @@
+---
+description: 
+globs: 
+alwaysApply: false
+---
+
+Following the structure of [pcs-shots.mdc](mdc:.cursor/rules/pcs-shots.mdc),
+  we describe the steps of Prover and Verifier for AIR constraints consis in this document.
+We present each step marked with P or V depending on whether Prover or Verifier performs the step.
+In terms of interaction with the challenger,
+  steps with the same numbers correpond to the dual steps between Prover and Verifier
+  (e.g. if a step 3P correponds to `pcs.open`, then 3V will correspond to `pcs.verify`),
+  steps without a P or V correpond to both Prover and Verifier doing the same thing.
+
+
+1: Compute `trace_domain` and `quotient_domain`.
+
+2P: Commit to given `trace`.
+
+3: Include the trace commitment, public values and logarithm of trace degree in transcript.
+
+4P. Evaluate the trace on quotient domain.
+
+5. Sample challenge `alpha` from transcript.
+
+6P. Compute the values of quotient on all of quotient domain (using parallel SIMD-enabled loop), using AIR constraints as `Q(X) = C(X) / Z_{quotient_domain}(X)` (where `C(X)` is the folded constraints).
+
+7P. Split the quotient polynomial into chunks, commit to the chunks.
+
+8. Include the commitment to quotient chunks in the transcript.
+
+9. Sample challenge `zeta` and compute `zeta_next`.
+
+10P. Open the trace at points `zeta` and `zeta_next`, and quotient chunks at `zeta`.
+
+10V. Verify the openings from step 10P.
+
+11V. Reconstruct the value of quotient at `zeta` from the opening values.
+
+12V. Compute the value of folded constraints polynomial at `zeta` using the opened values.
+
+13V. Ensure that quotient value computed from folded constraints matches the one reconstructed from chunks.
